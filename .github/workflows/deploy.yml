@@ -11,7 +11,9 @@ jobs:
         with:
           node-version: 20
       - run: npm install
+      - run: node pre-build.js
       - uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: 7944fc495deb37cf951e656774686cde
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: deploy
