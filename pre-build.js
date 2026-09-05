@@ -65,9 +65,15 @@ console.log('Bundled EJS views');
 // === 4. Patch server.js: convert to ES module ===
 if (fs.existsSync('server.js')) {
   let c = fs.readFileSync('server.js', 'utf8');
-  c = c.replace(/if\s*\(\s*require\.main\s*===\s*module\s*\)\s*\{[\s\S]*?\}/g, '');
-  c = c.replace(/module\.exports\s*=\s*app\s*;/g, 'export default app;');
+  // Remove everything from "if (require.main" to end of file
+  const idx = c.indexOf('if (require.main');
+  if (idx !== -1) c = c.substring(0, idx);
+  // Replace module.exports with export default
+  c = c.replace(/module\.exports\s*=\s*app\s*;?/g, 'export default app;');
+  // Remove "use strict"
   c = c.replace(/"use strict";?\n?/g, '');
+  // Ensure export default is present
+  if (!c.includes('export default')) c += '\nexport default app;\n';
   fs.writeFileSync('server.js', c);
   console.log('Patched: server.js');
 }
