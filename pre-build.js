@@ -12,20 +12,14 @@ const ytiFiles = [
 for (const p of ytiFiles) {
   if (fs.existsSync(p)) {
     let c = fs.readFileSync(p, 'utf8');
-    c = c.replace(
-      /import\s+(\w+)\s+from\s+['"][^'"]*package\.json['"]\s+with\s*\{\s*type:\s*['"]json['"]\s*\}\s*;?/g,
-      'const $1 = { version: "0.0.0", name: "youtubei.js" };'
-    );
+    c = c.replace(/import\s+(\w+)\s+from\s+['"][^'"]*package\.json['"]\s+with\s*\{\s*type:\s*['"]json['"]\s*\}\s*;?/g, 'const $1 = { version: "0.0.0", name: "youtubei.js" };');
     fs.writeFileSync(p, c);
     console.log('Patched: ' + p);
   }
 }
 
 // === 2. Patch undici ===
-const undiciFiles = [
-  'node_modules/undici/lib/cache/sqlite-cache-store.js',
-  'node_modules/undici/lib/util/runtime-features.js',
-];
+const undiciFiles = ['node_modules/undici/lib/cache/sqlite-cache-store.js','node_modules/undici/lib/util/runtime-features.js'];
 for (const p of undiciFiles) {
   if (fs.existsSync(p)) {
     let c = fs.readFileSync(p, 'utf8');
@@ -37,42 +31,95 @@ for (const p of undiciFiles) {
 }
 
 // === 3. Bundle EJS views ===
-function walkDir(dir) {
+function walkDir(dir, ext) {
   const results = [];
+  if (!fs.existsSync(dir)) return results;
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) results.push(...walkDir(full));
-    else if (entry.name.endsWith('.ejs')) results.push(full);
+    if (entry.isDirectory()) results.push(...walkDir(full, ext));
+    else if (ext === '' || entry.name.endsWith(ext)) results.push(full);
   }
   return results;
 }
 const viewsDir = path.join(process.cwd(), 'views');
-let out = '// Auto-generated. Do not edit.\nexport const views = {\n';
+let viewsOut = '// Auto-generated. Do not edit.\nexport const views = {\n';
 if (fs.existsSync(viewsDir)) {
-  for (const vf of walkDir(viewsDir)) {
+  for (const vf of walkDir(viewsDir, '.ejs')) {
     const rel = path.relative(viewsDir, vf).replace(/\\/g, '/');
     const content = fs.readFileSync(vf, 'utf8');
     const escaped = content.replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$/g, '\\$');
-    out += `  ${JSON.stringify(rel)}: \`${escaped}\`,\n`;
+    viewsOut += `  ${JSON.stringify(rel)}: \`${escaped}\`,\n`;
   }
 }
-out += '};\n';
-fs.writeFileSync('bundled-views.js', out);
+viewsOut += '};\n';
+fs.writeFileSync('bundled-views.js', viewsOut);
 console.log('Bundled EJS views');
 
-// === 4. Patch server.js (keep CommonJS, just remove server startup) ===
-if (fs.existsSync('server.js')) {
-  let c = fs.readFileSync('server.js', 'utf8');
-  // Remove everything from "process.on" to end of file
-  const idx = c.indexOf('process.on');
-  if (idx !== -1) c = c.substring(0, idx);
-  // Remove "use strict" (esbuild handles this)
-  c = c.replace(/"use strict";?\n?/g, '');
-  // Keep module.exports = app (DO NOT convert to ES module)
-  // Just ensure it ends with module.exports = app
-  if (!c.includes('module.exports')) c += '\nmodule.exports = app;\n';
-  fs.writeFileSync('server.js', c);
-  console.log('Patched: server.js');
+// === 4. Bundle public/ static files ===
+const publicDir = path.join(process.cwd(), 'public');
+let publicOut = '// Auto-generated. Do not edit.\nexport const publicFiles = {\n';
+if (fs.existsSync(publicDir)) {
+  for (const pf of walkDir(publicDir, '')) {
+    const rel = path.relative(publicDir, pf).replace(/\\/g, '/');
+    const ext = path.extname(pf).toLowerCase();
+    const mimeTypes = {'.html':'text/html','.css':'text/css','.js':'application/javascript','.json':'application/json','.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.gif':'image/gif','.svg':'image/svg+xml','.ico':'image/x-icon','.woff':'font/woff','.woff2':'font/woff2','.ttf':'font/ttf','.mp4':'video/mp4','.webm':'video/webm','.mp3':'audio/mpeg','.wav':'audio/wav','.pdf':'application/pdf','.txt':'text/plain'};
+    const mime = mimeTypes[ext] || 'application/octet-stream';
+    const isBinary = ['.png','.jpg','.jpeg','.gif','.ico','.woff','.woff2','.ttf','.mp4','.webm','.mp3','.wav','.pdf'].includes(ext);
+    if (isBinary) {
+      const buf = fs.readFileSync(pf);
+      publicOut += `  ${JSON.stringify(rel)}: { mime: ${JSON.stringify(mime)}, b64: ${JSON.stringify(buf.toString('base64'))} },\n`;
+    } else {
+      const content = fs.readFileSync(pf, 'utf8');
+      const escaped = content.replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$/g, '\\$');
+      publicOut += `  ${JSON.stringify(rel)}: { mime: ${JSON.stringify(mime)}, text: \`${escaped}\` },\n`;
+    }
+  }
 }
+publicOut += '};\n';
+fs.writeFileSync('bundled-public.js', publicOut);
+console.log('Bundled public files');
 
+// === 5. Patch ALL project .js files ===
+function patchFile(filePath, isServerJs) {
+  if (filePath.includes('node_modules/')) return;
+  if (filePath.endsWith('pre-build.js') || filePath.endsWith('worker-entry.js') || filePath.endsWith('bundled-views.js') || filePath.endsWith('bundled-public.js')) return;
+  let c = fs.readFileSync(filePath, 'utf8');
+  let changed = false;
+  if (c.includes('__dirname')) { c = c.replace(/__dirname/g, '"/app"'); changed = true; }
+  if (c.includes('__filename')) { c = c.replace(/__filename/g, JSON.stringify('/app/' + path.relative(process.cwd(), filePath))); changed = true; }
+  if (c.match(/express\.static\s*\(/)) {
+    c = c.replace(/app\.use\(\s*express\.static\([^)]*\)\s*\)/g, m => '// REMOVED: ' + m);
+    c = c.replace(/express\.static\([^)]*\)/g, m => '(function(){return function(req,res,next){next();};})() /* was: ' + m + ' */');
+    changed = true;
+  }
+  if (c.match(/app\.listen\s*\(/)) { c = c.replace(/app\.listen\([^;]*;/g, m => '// REMOVED: ' + m); changed = true; }
+  if (c.match(/http\.createServer\s*\(/)) { c = c.replace(/http\.createServer\([^;]*;/g, m => '// REMOVED: ' + m); changed = true; }
+  if (c.match(/fs\.createReadStream/)) { c = c.replace(/fs\.createReadStream/g, '// REMOVED: fs.createReadStream'); changed = true; }
+  if (c.match(/fs\.(writeFile|writeFileSync|mkdir|mkdirSync|appendFile|appendFileSync|unlink|unlinkSync|rmdir|rmdirSync|rename|renameSync|copyFile|copyFileSync)/)) {
+    c = c.replace(/fs\.(writeFile|writeFileSync|mkdir|mkdirSync|appendFile|appendFileSync|unlink|unlinkSync|rmdir|rmdirSync|rename|renameSync|copyFile|copyFileSync)/g, m => '// REMOVED: ' + m);
+    changed = true;
+  }
+  if (c.match(/require\(['"]child_process['"]\)/)) { c = c.replace(/require\(['"]child_process['"]\)/g, '{} /* child_process not available */'); changed = true; }
+  if (isServerJs) {
+    const idx = c.indexOf('process.on');
+    if (idx !== -1) { c = c.substring(0, idx); changed = true; }
+    c = c.replace(/async\s+function\s+initInnerTube\s*\(\)\s*\{[\s\S]*?^}/gm, '// initInnerTube removed for Workers\n');
+    c = c.replace(/initInnerTube\s*\(\s*\)\s*;?/g, '// initInnerTube() removed\n');
+    c = c.replace(/"use strict";?\n?/g, '');
+    if (!c.includes('module.exports')) c += '\nmodule.exports = app;\n';
+    changed = true;
+  }
+  if (changed) { fs.writeFileSync(filePath, c); console.log('Patched: ' + filePath); }
+}
+function walkJsFiles(dir) {
+  const results = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (entry.name === 'node_modules' || entry.name === '.git') continue;
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) results.push(...walkJsFiles(full));
+    else if (entry.name.endsWith('.js')) results.push(full);
+  }
+  return results;
+}
+for (const f of walkJsFiles(process.cwd())) { patchFile(f, path.basename(f) === 'server.js'); }
 console.log('Pre-build complete!');
