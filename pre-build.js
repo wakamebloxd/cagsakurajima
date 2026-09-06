@@ -18,15 +18,36 @@ for (const p of ytiFiles) {
   }
 }
 
-// === 2. Patch undici ===
-const undiciFiles = ['node_modules/undici/lib/cache/sqlite-cache-store.js','node_modules/undici/lib/util/runtime-features.js'];
-for (const p of undiciFiles) {
-  if (fs.existsSync(p)) {
-    let c = fs.readFileSync(p, 'utf8');
-    c = c.replace(/require\(['"]node:sqlite['"]\)/g, 'undefined');
-    c = c.replace(/'node:sqlite':\s*\(\)\s*=>\s*require\(['"]node:sqlite['"]\)/g, "'node:sqlite': () => undefined");
-    fs.writeFileSync(p, c);
-    console.log('Patched: ' + p);
+// === 2. Stub undici (incompatible with Workers, use native fetch) ===
+const undiciStub = `
+module.exports = {
+  fetch: globalThis.fetch,
+  Headers: globalThis.Headers,
+  Request: globalThis.Request,
+  Response: globalThis.Response,
+  FormData: globalThis.FormData,
+  WebSocket: globalThis.WebSocket,
+  Agent: function() {},
+  ProxyAgent: function() {},
+  RetryAgent: function() {},
+  request: async function(url, opts) {
+    const r = await fetch(url, opts);
+    return { statusCode: r.status, headers: r.headers, body: r.body, trailers: {} };
+  },
+  stream: async function*() {},
+  pipeline: function() {},
+};
+`;
+const undiciMain = 'node_modules/undici/index.js';
+if (fs.existsSync(undiciMain)) {
+  fs.writeFileSync(undiciMain, undiciStub);
+  console.log('Stubbed: undici');
+}
+// Also stub undici submodules
+const undiciSubs = ['node_modules/undici/lib'];
+for (const d of undiciSubs) {
+  if (fs.existsSync(d)) {
+    // Create a package.json redirect
   }
 }
 
