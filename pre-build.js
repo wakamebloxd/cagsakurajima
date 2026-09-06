@@ -18,61 +18,85 @@ for (const p of ytiFiles) {
   }
 }
 
-// === 2. Stub undici (incompatible with Workers, use native fetch) ===
-const undiciStub = `
-const noop = function() {};
-const noopAsync = async function() { return {}; };
-module.exports = new Proxy({}, {
-  get(target, prop) {
-    if (prop === 'fetch') return globalThis.fetch;
-    if (prop === 'Headers') return globalThis.Headers;
-    if (prop === 'Request') return globalThis.Request;
-    if (prop === 'Response') return globalThis.Response;
-    if (prop === 'FormData') return globalThis.FormData;
-    if (prop === 'WebSocket') return globalThis.WebSocket;
-    if (prop === 'request') return async function(url, opts) {
-      const r = await fetch(url, opts);
-      return { statusCode: r.status, headers: r.headers, body: r.body, trailers: {} };
-    };
-    if (prop === 'redirect') return async function(url, opts) {
-      const r = await fetch(url, opts);
-      return { statusCode: r.status, headers: r.headers, body: r.body, trailers: {} };
-    };
-    if (prop === 'stream') return async function*() {};
-    if (prop === 'pipeline') return noop;
-    if (prop === 'Agent') return noop;
-    if (prop === 'ProxyAgent') return noop;
-    if (prop === 'RetryAgent') return noop;
-    if (prop === 'MockAgent') return noop;
-    if (prop === 'MockClient') return noop;
-    if (prop === 'MockPool') return noop;
-    if (prop === 'Agent') return noop;
-    if (prop === 'Client') return noop;
-    if (prop === 'Pool') return noop;
-    if (prop === 'BalancedPool') return noop;
-    if (prop === 'errors') return {};
-    if (prop === 'setGlobalDispatcher') return noop;
-    if (prop === 'getGlobalDispatcher') return noop;
-    if (prop === 'isLocalhost') return () => false;
-    return noop;
+// === 2. Write undici shim (uses native fetch) ===
+const undiciShim = `const { EventEmitter } = require('events');
+class Body extends EventEmitter {
+  constructor(stream) { super(); this.stream = stream; }
+  pipe(dest) {
+    if (!this.stream) { if (dest.end) dest.end(); return dest; }
+    const reader = this.stream.getReader();
+    (async () => {
+      try { while (true) { const { done, value } = await reader.read(); if (done) break; if (dest.write) dest.write(Buffer.from(value)); } if (dest.end) dest.end(); }
+      catch (e) { this.emit('error', e); }
+    })();
+    return dest;
   }
-});
-`;
-
-const undiciMain = 'node_modules/undici/index.js';
-if (fs.existsSync(undiciMain)) {
-  fs.writeFileSync(undiciMain, undiciStub);
-  console.log('Stubbed: undici');
+  async dump() { if (!this.stream) return; const r = this.stream.getReader(); try { while (true) { const { done } = await r.read(); if (done) break; } } catch {} }
 }
-// Also stub undici submodules
-const undiciSubs = ['node_modules/undici/lib'];
-for (const d of undiciSubs) {
-  if (fs.existsSync(d)) {
-    // Create a package.json redirect
-  }
+class Agent { compose(i) { return this; } }
+const interceptors = { redirect: (o) => (d) => d, dump: (o) => (d) => d, retry: (o) => (d) => d };
+async function request(url, opts = {}) {
+  const r = await fetch(url, { method: opts.method || 'GET', headers: opts.headers || {}, redirect: 'follow' });
+  const headers = {}; r.headers.forEach((v, k) => { headers[k] = v; });
+  return { statusCode: r.status, headers, body: new Body(r.body), trailers: {} };
 }
+module.exports = { request, fetch: globalThis.fetch, Headers: globalThis.Headers, Request: globalThis.Request, Response: globalThis.Response, FormData: globalThis.FormData, Agent, ProxyAgent: Agent, RetryAgent: Agent, interceptors, setGlobalDispatcher: () => {}, getGlobalDispatcher: () => new Agent() };`;
+fs.writeFileSync('node_modules/undici/index.js', undiciShim);
+console.log('Stubbed: undici');
 
-// === 3. Bundle EJS views ===
+// === 3. Write http-shim ===
+fs.mkdirSync('node_modules/http-shim', { recursive: true });
+const httpShim = `const { EventEmitter } = require('events');
+function request(options, callback) {
+  const req = new EventEmitter();
+  const url = (options.protocol || 'http:') + '//' + (options.hostname || options.host) + (options.path || '/');
+  req.end = function() {
+    (async () => {
+      try {
+        const r = await fetch(url, { method: options.method || 'GET', headers: options.headers || {} });
+        const res = new EventEmitter();
+        res.statusCode = r.status;
+        res.headers = {};
+        r.headers.forEach((v, k) => { res.headers[k] = v; });
+        if (callback) callback(res);
+        if (r.body) { const reader = r.body.getReader(); while (true) { const { done, value } = await reader.read(); if (done) { res.emit('end'); break; } res.emit('data', Buffer.from(value)); } } else { res.emit('end'); }
+      } catch (e) { req.emit('error', e); }
+    })();
+    return req;
+  };
+  req.write = function() { return req; };
+  return req;
+}
+module.exports = { request, get: function(o, cb) { const r = request(o, cb); r.end(); return r; }, createServer: function() { return { listen: function() {} }; } };`;
+fs.writeFileSync('node_modules/http-shim/index.js', httpShim);
+fs.writeFileSync('node_modules/http-shim/package.json', JSON.stringify({ name: 'http-shim', version: '1.0.0', main: 'index.js' }));
+console.log('Created: http-shim');
+
+// === 4. Write miniget shim ===
+const minigetShim = `const { EventEmitter } = require('events');
+function miniget(url, opts = {}) {
+  const e = new EventEmitter();
+  e.pipe = function(dest) {
+    e.on('data', c => { if (dest.write) dest.write(c); });
+    e.on('end', () => { if (dest.end) dest.end(); });
+    e.on('error', err => { if (dest.emit) dest.emit('error', err); });
+    return dest;
+  };
+  (async () => {
+    try {
+      const r = await fetch(url, { headers: opts.headers || {} });
+      if (!r.ok) { e.emit('error', new Error('HTTP ' + r.status)); return; }
+      const reader = r.body.getReader();
+      while (true) { const { done, value } = await reader.read(); if (done) { e.emit('end'); break; } e.emit('data', Buffer.from(value)); }
+    } catch (err) { e.emit('error', err); }
+  })();
+  return e;
+}
+module.exports = miniget;`;
+fs.writeFileSync('node_modules/miniget/index.js', minigetShim);
+console.log('Stubbed: miniget');
+
+// === 5. Bundle EJS views ===
 function walkDir(dir, ext) {
   const results = [];
   if (!fs.existsSync(dir)) return results;
@@ -87,33 +111,33 @@ const viewsDir = path.join(process.cwd(), 'views');
 let viewsOut = '// Auto-generated. Do not edit.\nexport const views = {\n';
 if (fs.existsSync(viewsDir)) {
   for (const vf of walkDir(viewsDir, '.ejs')) {
-    const rel = path.relative(viewsDir, vf).replace(/\\/g, '/');
+    const rel = path.relative(viewsDir, vf).replace(/\\\\/g, '/');
     const content = fs.readFileSync(vf, 'utf8');
-    const escaped = content.replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$/g, '\\$');
-    viewsOut += `  ${JSON.stringify(rel)}: \`${escaped}\`,\n`;
+    const escaped = content.replace(/\\\\/g, '\\\\\\\\').replace(/\`/g, '\\\\\`').replace(/\\$/g, '\\\\$');
+    viewsOut += '  ' + JSON.stringify(rel) + ': \`' + escaped + '\`,\n';
   }
 }
 viewsOut += '};\n';
 fs.writeFileSync('bundled-views.js', viewsOut);
 console.log('Bundled EJS views');
 
-// === 4. Bundle public/ static files ===
+// === 6. Bundle public files ===
 const publicDir = path.join(process.cwd(), 'public');
 let publicOut = '// Auto-generated. Do not edit.\nexport const publicFiles = {\n';
 if (fs.existsSync(publicDir)) {
   for (const pf of walkDir(publicDir, '')) {
-    const rel = path.relative(publicDir, pf).replace(/\\/g, '/');
+    const rel = path.relative(publicDir, pf).replace(/\\\\/g, '/');
     const ext = path.extname(pf).toLowerCase();
     const mimeTypes = {'.html':'text/html','.css':'text/css','.js':'application/javascript','.json':'application/json','.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.gif':'image/gif','.svg':'image/svg+xml','.ico':'image/x-icon','.woff':'font/woff','.woff2':'font/woff2','.ttf':'font/ttf','.mp4':'video/mp4','.webm':'video/webm','.mp3':'audio/mpeg','.wav':'audio/wav','.pdf':'application/pdf','.txt':'text/plain'};
     const mime = mimeTypes[ext] || 'application/octet-stream';
     const isBinary = ['.png','.jpg','.jpeg','.gif','.ico','.woff','.woff2','.ttf','.mp4','.webm','.mp3','.wav','.pdf'].includes(ext);
     if (isBinary) {
       const buf = fs.readFileSync(pf);
-      publicOut += `  ${JSON.stringify(rel)}: { mime: ${JSON.stringify(mime)}, b64: ${JSON.stringify(buf.toString('base64'))} },\n`;
+      publicOut += '  ' + JSON.stringify(rel) + ': { mime: ' + JSON.stringify(mime) + ', b64: ' + JSON.stringify(buf.toString('base64')) + ' },\n';
     } else {
       const content = fs.readFileSync(pf, 'utf8');
-      const escaped = content.replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$/g, '\\$');
-      publicOut += `  ${JSON.stringify(rel)}: { mime: ${JSON.stringify(mime)}, text: \`${escaped}\` },\n`;
+      const escaped = content.replace(/\\\\/g, '\\\\\\\\').replace(/\`/g, '\\\\\`').replace(/\\$/g, '\\\\$');
+      publicOut += '  ' + JSON.stringify(rel) + ': { mime: ' + JSON.stringify(mime) + ', text: \`' + escaped + '\` },\n';
     }
   }
 }
@@ -121,7 +145,7 @@ publicOut += '};\n';
 fs.writeFileSync('bundled-public.js', publicOut);
 console.log('Bundled public files');
 
-// === 5. Patch ALL project .js files ===
+// === 7. Patch ALL project .js files ===
 function patchFile(filePath, isServerJs) {
   if (filePath.includes('node_modules/')) return;
   if (filePath.endsWith('pre-build.js') || filePath.endsWith('worker-entry.js') || filePath.endsWith('bundled-views.js') || filePath.endsWith('bundled-public.js')) return;
@@ -129,6 +153,9 @@ function patchFile(filePath, isServerJs) {
   let changed = false;
   if (c.includes('__dirname')) { c = c.replace(/__dirname/g, '"/app"'); changed = true; }
   if (c.includes('__filename')) { c = c.replace(/__filename/g, JSON.stringify('/app/' + path.relative(process.cwd(), filePath))); changed = true; }
+  if (c.match(/require\(['"]http['"]\)/)) { c = c.replace(/require\(['"]http['"]\)/g, "require('http-shim')"); changed = true; }
+  if (c.match(/require\(['"]https['"]\)/)) { c = c.replace(/require\(['"]https['"]\)/g, "require('http-shim')"); changed = true; }
+  if (c.match(/require\(['"]compression['"]\)/)) { c = c.replace(/require\(['"]compression['"]\)/g, '(function(){return function(){return function(req,res,next){next();};};})'); changed = true; }
   if (c.match(/express\.static\s*\(/)) {
     c = c.replace(/app\.use\(\s*express\.static\([^)]*\)\s*\)/g, m => '// REMOVED: ' + m);
     c = c.replace(/express\.static\([^)]*\)/g, m => '(function(){return function(req,res,next){next();};})() /* was: ' + m + ' */');
