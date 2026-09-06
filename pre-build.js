@@ -2,7 +2,7 @@
 const fs = require('fs');
 const path = require('path');
 
-// === 1. Patch youtubei.js: `import ... with { type: 'json' }` ===
+// === 1. Patch youtubei.js ===
 const ytiFiles = [
   'node_modules/youtubei.js/dist/src/core/Player.js',
   'node_modules/youtubei.js/dist/src/core/Session.js',
@@ -22,7 +22,7 @@ for (const p of ytiFiles) {
   }
 }
 
-// === 2. Patch undici: remove node:sqlite ===
+// === 2. Patch undici ===
 const undiciFiles = [
   'node_modules/undici/lib/cache/sqlite-cache-store.js',
   'node_modules/undici/lib/util/runtime-features.js',
@@ -37,7 +37,7 @@ for (const p of undiciFiles) {
   }
 }
 
-// === 3. Bundle EJS views into bundled-views.js ===
+// === 3. Bundle EJS views ===
 function walkDir(dir) {
   const results = [];
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -47,7 +47,6 @@ function walkDir(dir) {
   }
   return results;
 }
-
 const viewsDir = path.join(process.cwd(), 'views');
 let out = '// Auto-generated. Do not edit.\nexport const views = {\n';
 if (fs.existsSync(viewsDir)) {
@@ -62,17 +61,20 @@ out += '};\n';
 fs.writeFileSync('bundled-views.js', out);
 console.log('Bundled EJS views');
 
-// === 4. Patch server.js: convert to ES module ===
+// === 4. Patch server.js ===
 if (fs.existsSync('server.js')) {
   let c = fs.readFileSync('server.js', 'utf8');
-  // Remove everything from "if (require.main" to end of file
-  const idx = c.indexOf('if (require.main');
+  // Remove everything from "process.on" to end of file
+  const idx = c.indexOf('process.on');
   if (idx !== -1) c = c.substring(0, idx);
-  // Replace module.exports with export default
-  c = c.replace(/module\.exports\s*=\s*app\s*;?/g, 'export default app;');
   // Remove "use strict"
   c = c.replace(/"use strict";?\n?/g, '');
-  // Ensure export default is present
+  // Replace module.exports with export default
+  c = c.replace(/module\.exports\s*=\s*app\s*;?/g, 'export default app;');
+  // Add require shim at the top
+  const shim = `import { createRequire } from 'node:module';\nconst require = createRequire(import.meta.url);\n`;
+  c = shim + c;
+  // Ensure export default
   if (!c.includes('export default')) c += '\nexport default app;\n';
   fs.writeFileSync('server.js', c);
   console.log('Patched: server.js');
