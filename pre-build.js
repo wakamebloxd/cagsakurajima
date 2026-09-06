@@ -20,24 +20,45 @@ for (const p of ytiFiles) {
 
 // === 2. Stub undici (incompatible with Workers, use native fetch) ===
 const undiciStub = `
-module.exports = {
-  fetch: globalThis.fetch,
-  Headers: globalThis.Headers,
-  Request: globalThis.Request,
-  Response: globalThis.Response,
-  FormData: globalThis.FormData,
-  WebSocket: globalThis.WebSocket,
-  Agent: function() {},
-  ProxyAgent: function() {},
-  RetryAgent: function() {},
-  request: async function(url, opts) {
-    const r = await fetch(url, opts);
-    return { statusCode: r.status, headers: r.headers, body: r.body, trailers: {} };
-  },
-  stream: async function*() {},
-  pipeline: function() {},
-};
+const noop = function() {};
+const noopAsync = async function() { return {}; };
+module.exports = new Proxy({}, {
+  get(target, prop) {
+    if (prop === 'fetch') return globalThis.fetch;
+    if (prop === 'Headers') return globalThis.Headers;
+    if (prop === 'Request') return globalThis.Request;
+    if (prop === 'Response') return globalThis.Response;
+    if (prop === 'FormData') return globalThis.FormData;
+    if (prop === 'WebSocket') return globalThis.WebSocket;
+    if (prop === 'request') return async function(url, opts) {
+      const r = await fetch(url, opts);
+      return { statusCode: r.status, headers: r.headers, body: r.body, trailers: {} };
+    };
+    if (prop === 'redirect') return async function(url, opts) {
+      const r = await fetch(url, opts);
+      return { statusCode: r.status, headers: r.headers, body: r.body, trailers: {} };
+    };
+    if (prop === 'stream') return async function*() {};
+    if (prop === 'pipeline') return noop;
+    if (prop === 'Agent') return noop;
+    if (prop === 'ProxyAgent') return noop;
+    if (prop === 'RetryAgent') return noop;
+    if (prop === 'MockAgent') return noop;
+    if (prop === 'MockClient') return noop;
+    if (prop === 'MockPool') return noop;
+    if (prop === 'Agent') return noop;
+    if (prop === 'Client') return noop;
+    if (prop === 'Pool') return noop;
+    if (prop === 'BalancedPool') return noop;
+    if (prop === 'errors') return {};
+    if (prop === 'setGlobalDispatcher') return noop;
+    if (prop === 'getGlobalDispatcher') return noop;
+    if (prop === 'isLocalhost') return () => false;
+    return noop;
+  }
+});
 `;
+
 const undiciMain = 'node_modules/undici/index.js';
 if (fs.existsSync(undiciMain)) {
   fs.writeFileSync(undiciMain, undiciStub);
