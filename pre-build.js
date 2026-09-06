@@ -18,7 +18,7 @@ for (const p of ytiFiles) {
   }
 }
 
-// === 2. Write undici shim (uses native fetch) ===
+
 const undiciShim = `const { EventEmitter } = require('events');
 class Body extends EventEmitter {
   constructor(stream) { super(); this.stream = stream; }
