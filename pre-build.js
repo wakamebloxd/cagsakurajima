@@ -1,4 +1,3 @@
-// Pre-build: patches youtubei.js & undici, bundles EJS views, patches server.js
 const fs = require('fs');
 const path = require('path');
 
@@ -61,21 +60,17 @@ out += '};\n';
 fs.writeFileSync('bundled-views.js', out);
 console.log('Bundled EJS views');
 
-// === 4. Patch server.js ===
+// === 4. Patch server.js (keep CommonJS, just remove server startup) ===
 if (fs.existsSync('server.js')) {
   let c = fs.readFileSync('server.js', 'utf8');
   // Remove everything from "process.on" to end of file
   const idx = c.indexOf('process.on');
   if (idx !== -1) c = c.substring(0, idx);
-  // Remove "use strict"
+  // Remove "use strict" (esbuild handles this)
   c = c.replace(/"use strict";?\n?/g, '');
-  // Replace module.exports with export default
-  c = c.replace(/module\.exports\s*=\s*app\s*;?/g, 'export default app;');
-  // Add require shim at the top
-  const shim = `import { createRequire } from 'node:module';\nconst require = createRequire(import.meta.url);\n`;
-  c = shim + c;
-  // Ensure export default
-  if (!c.includes('export default')) c += '\nexport default app;\n';
+  // Keep module.exports = app (DO NOT convert to ES module)
+  // Just ensure it ends with module.exports = app
+  if (!c.includes('module.exports')) c += '\nmodule.exports = app;\n';
   fs.writeFileSync('server.js', c);
   console.log('Patched: server.js');
 }
