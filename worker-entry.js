@@ -1,6 +1,5 @@
 import fs from 'node:fs';
 import { EventEmitter } from 'node:events';
-import ejs from 'ejs';
 import { views } from './bundled-views.js';
 import { publicFiles } from './bundled-public.js';
 
@@ -213,25 +212,38 @@ export default {
       format() { return this; }, links() { return this; },
     });
 
-    // === Override res.render to use bundled EJS views ===
+    // === Override res.render to use pre-compiled EJS views ===
     res.render = function(viewName, data) {
       const opts = Object.assign({}, res.locals, data || {});
       // Try common view paths
-      let template = views[viewName] || views[viewName + '.ejs'];
-      if (!template) {
+      let templateFn = views[viewName] || views[viewName + '.ejs'];
+      if (!templateFn) {
         for (const key of Object.keys(views)) {
           if (key === viewName || key === viewName + '.ejs' || key.endsWith('/' + viewName) || key.endsWith('/' + viewName + '.ejs')) {
-            template = views[key];
+            templateFn = views[key];
             break;
           }
         }
       }
-      if (!template) {
+      if (!templateFn) {
         res.status(500).send('View not found: ' + viewName);
         return;
       }
       try {
-        const html = ejs.render(template, opts, { filename: 'views/' + viewName });
+        const includeFn = function(name, d) {
+          let incFn = views[name] || views[name + '.ejs'];
+          if (!incFn) {
+            for (const key of Object.keys(views)) {
+              if (key === name || key === name + '.ejs' || key.endsWith('/' + name) || key.endsWith('/' + name + '.ejs')) {
+                incFn = views[key];
+                break;
+              }
+            }
+          }
+          if (!incFn) return '';
+          return incFn(Object.assign({}, opts, d || {}), includeFn);
+        };
+        const html = templateFn(opts, includeFn);
         res.setHeader('Content-Type', 'text/html');
         res.send(html);
       } catch (e) {
