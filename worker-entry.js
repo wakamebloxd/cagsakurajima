@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import { EventEmitter } from 'node:events';
+import ejs from 'ejs';
 import { views } from './bundled-views.js';
 import { publicFiles } from './bundled-public.js';
 
@@ -211,6 +212,32 @@ export default {
       append(k, v) { resHeaders[k] = resHeaders[k] ? `${resHeaders[k]}, ${v}` : v; return this; },
       format() { return this; }, links() { return this; },
     });
+
+    // === Override res.render to use bundled EJS views ===
+    res.render = function(viewName, data) {
+      const opts = Object.assign({}, res.locals, data || {});
+      // Try common view paths
+      let template = views[viewName] || views[viewName + '.ejs'];
+      if (!template) {
+        for (const key of Object.keys(views)) {
+          if (key === viewName || key === viewName + '.ejs' || key.endsWith('/' + viewName) || key.endsWith('/' + viewName + '.ejs')) {
+            template = views[key];
+            break;
+          }
+        }
+      }
+      if (!template) {
+        res.status(500).send('View not found: ' + viewName);
+        return;
+      }
+      try {
+        const html = ejs.render(template, opts, { filename: 'views/' + viewName });
+        res.setHeader('Content-Type', 'text/html');
+        res.send(html);
+      } catch (e) {
+        res.status(500).send('Render error: ' + e.message);
+      }
+    };
 
     // === Call Express ===
     try {
