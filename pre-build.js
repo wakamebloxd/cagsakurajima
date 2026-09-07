@@ -124,7 +124,7 @@ const minigetLines = [
 fs.writeFileSync('node_modules/miniget/index.js', minigetLines.join('\n'));
 console.log('Stubbed: miniget');
 
-// === 5. Bundle EJS views using JSON.stringify (handles all escaping) ===
+// === 5. Bundle EJS views: pre-compile to functions (Workers forbids eval/Function at runtime) ===
 function walkDir(dir, ext) {
   var results = [];
   if (!fs.existsSync(dir)) return results;
@@ -136,16 +136,45 @@ function walkDir(dir, ext) {
   return results;
 }
 
-var viewsObj = {};
+var ejs = require('ejs');
 var viewsDir = path.join(process.cwd(), 'views');
+var viewsObj = {};
 if (fs.existsSync(viewsDir)) {
   for (var vf of walkDir(viewsDir, '.ejs')) {
     var rel = path.relative(viewsDir, vf).replace(/\\/g, '/');
-    viewsObj[rel] = fs.readFileSync(vf, 'utf8');
+    var tmpl = fs.readFileSync(vf, 'utf8');
+    try {
+      var compiled = ejs.compile(tmpl, {
+        filename: vf,
+        client: true,
+        _with: false,
+        localsName: '__d',
+        escape: '__escape'
+      });
+      viewsObj[rel] = compiled.toString();
+    } catch (e) {
+      console.error('EJS compile error for ' + rel + ': ' + e.message);
+      viewsObj[rel] = 'function() { return "EJS compile error: ' + e.message.replace(/"/g, '\\"').replace(/\n/g, '\\n') + '"; }';
+    }
   }
 }
-fs.writeFileSync('bundled-views.js', 'export const views = ' + JSON.stringify(viewsObj) + ';\n');
-console.log('Bundled EJS views (' + Object.keys(viewsObj).length + ' files)');
+var lines = ['export const views = {'];
+for (var key of Object.keys(viewsObj)) {
+  lines.push('  ' + JSON.stringify(key) + ': ' + viewsObj[key] + ',');
+}
+lines.push('};');
+lines.push('');
+lines.push('export function __escape(v) {');
+lines.push('  if (v == null) return "";');
+lines.push('  return String(v)');
+lines.push('    .replace(/&/g, "&amp;")');
+lines.push('    .replace(/</g, "&lt;")');
+lines.push('    .replace(/>/g, "&gt;")');
+lines.push('    .replace(/"/g, "&quot;")');
+lines.push("    .replace(/'/g, '&#39;');");
+lines.push('}');
+fs.writeFileSync('bundled-views.js', lines.join('\n') + '\n');
+console.log('Bundled EJS views (' + Object.keys(viewsObj).length + ' files, pre-compiled)');
 
 // === 6. Bundle public files using JSON.stringify ===
 var publicObj = {};
@@ -200,8 +229,7 @@ function patchFile(filePath, isServerJs) {
 
   // Stub compression
   if (c.includes("require('compression')")) { c = c.replace(/require\('compression'\)/g, "(function(){return function(req,res,next){next();};})"); changed = true; }
-  if (c.includes("require('compression')")) { c = c.replace(/require\('compression'\)/g, "(function(){return function(req,res,next){next();};})"); changed = true; }
-
+  if (c.includes('require("compression")')) { c = c.replace(/require\("compression"\)/g, "(function(){return function(req,res,next){next();};})"); changed = true; }
 
   // Remove express.static
   if (c.match(/express\.static\s*\(/)) {
