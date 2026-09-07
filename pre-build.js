@@ -124,7 +124,7 @@ const minigetLines = [
 fs.writeFileSync('node_modules/miniget/index.js', minigetLines.join('\n'));
 console.log('Stubbed: miniget');
 
-// === 5. Bundle EJS views: pre-compile to functions (Workers forbids eval/Function at runtime) ===
+// === 5. Bundle EJS views: pre-compile, then strip `with` (banned in Workers strict mode) ===
 function walkDir(dir, ext) {
   var results = [];
   if (!fs.existsSync(dir)) return results;
@@ -137,42 +137,70 @@ function walkDir(dir, ext) {
 }
 
 var ejs = require('ejs');
+
+var jsSkip = new Set([
+  'var','let','const','function','return','if','else','for','while','do','switch',
+  'case','break','continue','new','typeof','instanceof','in','of','delete','void',
+  'throw','try','catch','finally','class','extends','super','yield','async','await',
+  'this','arguments','true','false','null','undefined','NaN','Infinity','default',
+  'from','as','with','require','module','exports','process','console','Buffer',
+  'global','globalThis','Promise','setTimeout','setInterval','clearTimeout',
+  'clearInterval','encodeURIComponent','decodeURIComponent','parseInt','parseFloat',
+  'isNaN','isFinite','Math','JSON','Object','Array','String','Number','Boolean',
+  'Date','RegExp','Error','TypeError','RangeError','SyntaxError','Map','Set',
+  'WeakMap','WeakSet','Symbol','Proxy','Reflect','escape','include','rethrow',
+  'locals','__output','__append'
+]);
+
 var viewsDir = path.join(process.cwd(), 'views');
 var viewsObj = {};
+
 if (fs.existsSync(viewsDir)) {
   for (var vf of walkDir(viewsDir, '.ejs')) {
     var rel = path.relative(viewsDir, vf).replace(/\\/g, '/');
     var tmpl = fs.readFileSync(vf, 'utf8');
     try {
-      var compiled = ejs.compile(tmpl, {
-        filename: vf,
-        client: true,
-        _with: false,
-        localsName: '__d',
-        escape: '__escape'
-      });
-      viewsObj[rel] = compiled.toString();
+      var compiled = ejs.compile(tmpl, { filename: vf, client: true });
+      var source = compiled.toString();
+
+      // Remove `with (locals || {}) {` and replace with explicit var declarations
+      var withMatch = source.match(/with\s*\(\s*locals\s*(?:\|\|\s*\{\}\s*)?\)\s*\{/);
+      if (withMatch) {
+        var afterWith = source.substring(withMatch.index + withMatch[0].length);
+        var identifiers = new Set();
+        var idRegex = /\b([a-zA-Z_$][a-zA-Z0-9_$]*)\b/g;
+        var m;
+        while (m = idRegex.exec(afterWith)) {
+          var name = m[1];
+          var offset = m.index;
+          if (offset > 0 && afterWith[offset - 1] === '.') continue;
+          if (jsSkip.has(name)) continue;
+          identifiers.add(name);
+        }
+
+        var decls = '';
+        if (identifiers.size > 0) {
+          decls = 'var ' + Array.from(identifiers).map(function(id) {
+            return id + ' = locals != null ? locals[' + JSON.stringify(id) + '] : undefined';
+          }).join(', ') + ';';
+        }
+
+        source = source.substring(0, withMatch.index) + decls + '\n' + source.substring(withMatch.index + withMatch[0].length);
+      }
+
+      viewsObj[rel] = source;
     } catch (e) {
       console.error('EJS compile error for ' + rel + ': ' + e.message);
       viewsObj[rel] = 'function() { return "EJS compile error: ' + e.message.replace(/"/g, '\\"').replace(/\n/g, '\\n') + '"; }';
     }
   }
 }
+
 var lines = ['export const views = {'];
 for (var key of Object.keys(viewsObj)) {
   lines.push('  ' + JSON.stringify(key) + ': ' + viewsObj[key] + ',');
 }
 lines.push('};');
-lines.push('');
-lines.push('export function __escape(v) {');
-lines.push('  if (v == null) return "";');
-lines.push('  return String(v)');
-lines.push('    .replace(/&/g, "&amp;")');
-lines.push('    .replace(/</g, "&lt;")');
-lines.push('    .replace(/>/g, "&gt;")');
-lines.push('    .replace(/"/g, "&quot;")');
-lines.push("    .replace(/'/g, '&#39;');");
-lines.push('}');
 fs.writeFileSync('bundled-views.js', lines.join('\n') + '\n');
 console.log('Bundled EJS views (' + Object.keys(viewsObj).length + ' files, pre-compiled)');
 
