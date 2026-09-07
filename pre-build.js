@@ -150,7 +150,8 @@ var jsSkip = new Set([
   'Date','RegExp','Error','TypeError','RangeError','SyntaxError','Map','Set',
   'WeakMap','WeakSet','Symbol','Proxy','Reflect','escape','include','rethrow',
   'locals','__output','__append','import','export','enum','implements','interface',
-  'package','private','protected','public','static','debugger'
+  'package','private','protected','public','static','debugger','eval','arguments'
+
 ]);
 
 
