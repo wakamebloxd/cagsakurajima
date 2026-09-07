@@ -163,7 +163,7 @@ if (fs.existsSync(viewsDir)) {
       var compiled = ejs.compile(tmpl, { filename: vf, client: true });
       var source = compiled.toString();
 
-      // Remove `with (locals || {}) {` and replace with explicit var declarations
+      // Replace `with (locals || {}) {` with var declarations + block `{` (keeps braces balanced, removes `with` keyword)
       var withMatch = source.match(/with\s*\(\s*locals\s*(?:\|\|\s*\{\}\s*)?\)\s*\{/);
       if (withMatch) {
         var afterWith = source.substring(withMatch.index + withMatch[0].length);
@@ -185,7 +185,8 @@ if (fs.existsSync(viewsDir)) {
           }).join(', ') + ';';
         }
 
-        source = source.substring(0, withMatch.index) + decls + '\n' + source.substring(withMatch.index + withMatch[0].length);
+        // Replace `with (locals || {}) {` with `var declarations; {` (keep the { as a block)
+        source = source.substring(0, withMatch.index) + decls + '\n{' + source.substring(withMatch.index + withMatch[0].length);
       }
 
       viewsObj[rel] = source;
