@@ -48,8 +48,18 @@ async function getApp() {
 
 export default {
   async fetch(request) {
-    let app;
-    try {
+        // === Serve static files first (bypasses Express & login middleware) ===
+    const url0 = new URL(request.url);
+    let sp = url0.pathname.replace(/^\/+/, '');
+    if (sp === '') sp = 'index.html';
+    if (publicFiles[sp]) {
+      const f = publicFiles[sp];
+      const body = f.text !== undefined ? f.text : Buffer.from(f.b64, 'base64');
+      return new Response(body, {
+        status: 200,
+        headers: { 'Content-Type': f.mime, 'Cache-Control': 'public, max-age=3600' }
+      });
+    }
       app = await getApp();
     } catch (e) {
       return new Response('Module load error: ' + e.message + '\n' + (e.stack || ''), { status: 500, headers: { 'content-type': 'text/plain' } });
