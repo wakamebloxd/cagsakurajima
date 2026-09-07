@@ -199,8 +199,9 @@ function patchFile(filePath, isServerJs) {
   if (c.includes('require("https")')) { c = c.replace(/require\("https"\)/g, "require('" + shimPath + "')"); changed = true; }
 
   // Stub compression
-  if (c.includes("require('compression')")) { c = c.replace(/require\('compression'\)/g, "(function(){return function(){return function(req,res,next){next();};};})"); changed = true; }
-  if (c.includes('require("compression")')) { c = c.replace(/require\("compression"\)/g, "(function(){return function(){return function(req,res,next){next();};};})"); changed = true; }
+  if (c.includes("require('compression')")) { c = c.replace(/require\('compression'\)/g, "(function(){return function(req,res,next){next();};})"); changed = true; }
+  if (c.includes("require('compression')")) { c = c.replace(/require\('compression'\)/g, "(function(){return function(req,res,next){next();};})"); changed = true; }
+
 
   // Remove express.static
   if (c.match(/express\.static\s*\(/)) {
