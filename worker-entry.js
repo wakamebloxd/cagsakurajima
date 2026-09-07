@@ -3,6 +3,17 @@ import { EventEmitter } from 'node:events';
 import { views } from './bundled-views.js';
 import { publicFiles } from './bundled-public.js';
 
+// EJS escape function (passed as 4th arg to compiled template)
+function __escape(v) {
+  if (v == null) return "";
+  return String(v)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 // ============================================================
 // Monkey-patch fs for EJS templates and static files
 // ============================================================
@@ -241,9 +252,9 @@ export default {
             }
           }
           if (!incFn) return '';
-          return incFn(Object.assign({}, opts, d || {}), includeFn);
+          return incFn(Object.assign({}, opts, d || {}), includeFn, '', __escape);
         };
-        const html = templateFn(opts, includeFn);
+        const html = templateFn(opts, includeFn, '', __escape);
         res.setHeader('Content-Type', 'text/html');
         res.send(html);
       } catch (e) {
