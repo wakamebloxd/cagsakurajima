@@ -3,7 +3,6 @@ import { EventEmitter } from 'node:events';
 import { views } from './bundled-views.js';
 import { publicFiles } from './bundled-public.js';
 
-// EJS escape function (passed as 4th arg to compiled template)
 function __escape(v) {
   if (v == null) return "";
   return String(v)
@@ -14,9 +13,6 @@ function __escape(v) {
     .replace(/'/g, "&#39;");
 }
 
-// ============================================================
-// Monkey-patch fs for EJS templates and static files
-// ============================================================
 const origRead = fs.readFileSync;
 const origExists = fs.existsSync;
 const origStat = fs.statSync;
@@ -75,15 +71,12 @@ function staticMiddleware(req, res, next) {
   next();
 }
 
-// ============================================================
-// Import Express app (dynamic, after fs patch)
-// ============================================================
 let appPromise;
 async function getApp() {
   if (!appPromise) {
     appPromise = import('./server.js').then(m => {
       const app = m.default || m;
-      // Inject our static middleware at the beginning
+    
       if (typeof app.use === 'function') {
         app.use(staticMiddleware);
       }
@@ -93,12 +86,8 @@ async function getApp() {
   return appPromise;
 }
 
-// ============================================================
-// Fetch handler
-// ============================================================
 export default {
   async fetch(request) {
-    // === Serve static files first (bypasses Express & login middleware) ===
     const url0 = new URL(request.url);
     let sp = url0.pathname.replace(/^\/+/, '');
     if (sp === '') sp = 'index.html';
@@ -113,12 +102,10 @@ export default {
 
     const app = await getApp();
     const url = new URL(request.url);
-
-    // Parse headers
+    
     const headers = {};
     request.headers.forEach((v, k) => { headers[k.toLowerCase()] = v; });
 
-    // Parse cookies
     const cookies = {};
     if (headers['cookie']) {
       headers['cookie'].split(';').forEach(c => {
@@ -127,11 +114,9 @@ export default {
       });
     }
 
-    // Parse query
     const query = {};
     url.searchParams.forEach((v, k) => { query[k] = v; });
-
-    // Get & parse body
+    
     let body = '';
     if (!['GET', 'HEAD'].includes(request.method)) body = await request.text();
     let parsedBody = body;
@@ -142,7 +127,6 @@ export default {
       try { parsedBody = JSON.parse(body); } catch {}
     }
 
-    // === Mock req ===
     const req = new EventEmitter();
     Object.assign(req, {
       method: request.method,
@@ -160,7 +144,6 @@ export default {
       resume() {}, pause() {},
     });
 
-    // === Mock res ===
     const resHeaders = {};
     const chunks = [];
     let statusCode = 200;
@@ -223,10 +206,8 @@ export default {
       format() { return this; }, links() { return this; },
     });
 
-    // === Override res.render to use pre-compiled EJS views ===
     res.render = function(viewName, data) {
       const opts = Object.assign({}, res.locals, data || {});
-      // Try common view paths
       let templateFn = views[viewName] || views[viewName + '.ejs'];
       if (!templateFn) {
         for (const key of Object.keys(views)) {
@@ -262,18 +243,15 @@ export default {
       }
     };
 
-    // === Call Express ===
     try {
       const result = app(req, res);
       if (result && typeof result.then === 'function') await result;
     } catch (e) {
       return new Response('Internal Server Error: ' + e.message, { status: 500 });
     }
-
-    // Wait for response (10s timeout)
+    
     await Promise.race([respPromise, new Promise(r => setTimeout(r, 10000))]);
 
-    // === Build Workers Response ===
     const rh = new Headers();
     for (const [k, v] of Object.entries(resHeaders)) {
       if (v == null) continue;
