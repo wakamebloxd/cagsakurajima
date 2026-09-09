@@ -1,7 +1,6 @@
 const fs = require('fs');
 const path = require('path');
 
-// === 1. Patch youtubei.js: replace `import ... with { type: 'json' }` ===
 const ytiFiles = [
   'node_modules/youtubei.js/dist/src/core/Player.js',
   'node_modules/youtubei.js/dist/src/core/Session.js',
@@ -18,7 +17,6 @@ for (const p of ytiFiles) {
   }
 }
 
-// === 2. Stub undici (use native fetch) ===
 const undiciLines = [
   "const { EventEmitter } = require('events');",
   "class Body extends EventEmitter {",
@@ -48,7 +46,6 @@ const undiciLines = [
 fs.writeFileSync('node_modules/undici/index.js', undiciLines.join('\n'));
 console.log('Stubbed: undici');
 
-// === 3. Create http-shim.js in project root ===
 const httpShimLines = [
   "const { EventEmitter } = require('events');",
   "function request(options, callback) {",
@@ -93,7 +90,6 @@ const httpShimLines = [
 fs.writeFileSync('http-shim.js', httpShimLines.join('\n'));
 console.log('Created: http-shim.js');
 
-// === 4. Stub miniget ===
 const minigetLines = [
   "const { EventEmitter } = require('events');",
   "function miniget(url, opts) {",
@@ -124,7 +120,6 @@ const minigetLines = [
 fs.writeFileSync('node_modules/miniget/index.js', minigetLines.join('\n'));
 console.log('Stubbed: miniget');
 
-// === 5. Bundle EJS views: pre-compile, then strip `with` (banned in Workers strict mode) ===
 function walkDir(dir, ext) {
   var results = [];
   if (!fs.existsSync(dir)) return results;
@@ -165,8 +160,7 @@ if (fs.existsSync(viewsDir)) {
     try {
       var compiled = ejs.compile(tmpl, { filename: vf, client: true });
       var source = compiled.toString();
-
-      // Replace `with (locals || {}) {` with var declarations + block `{` (keeps braces balanced, removes `with` keyword)
+  
       var withMatch = source.match(/with\s*\(\s*locals\s*(?:\|\|\s*\{\}\s*)?\)\s*\{/);
       if (withMatch) {
         var afterWith = source.substring(withMatch.index + withMatch[0].length);
@@ -188,7 +182,6 @@ if (fs.existsSync(viewsDir)) {
           }).join(', ') + ';';
         }
 
-        // Replace `with (locals || {}) {` with `var declarations; {` (keep the { as a block)
         source = source.substring(0, withMatch.index) + decls + '\n{' + source.substring(withMatch.index + withMatch[0].length);
       }
 
@@ -208,7 +201,6 @@ lines.push('};');
 fs.writeFileSync('bundled-views.js', lines.join('\n') + '\n');
 console.log('Bundled EJS views (' + Object.keys(viewsObj).length + ' files, pre-compiled)');
 
-// === 6. Bundle public files using JSON.stringify ===
 var publicObj = {};
 var publicDir = path.join(process.cwd(), 'public');
 var mimeTypes = {
@@ -237,7 +229,6 @@ if (fs.existsSync(publicDir)) {
 fs.writeFileSync('bundled-public.js', 'export const publicFiles = ' + JSON.stringify(publicObj) + ';\n');
 console.log('Bundled public files (' + Object.keys(publicObj).length + ' files)');
 
-// === 7. Patch ALL project .js files ===
 function patchFile(filePath, isServerJs) {
   if (filePath.includes('node_modules/')) return;
   var basename = path.basename(filePath);
@@ -246,11 +237,9 @@ function patchFile(filePath, isServerJs) {
   var c = fs.readFileSync(filePath, 'utf8');
   var changed = false;
 
-  // Replace __dirname and __filename
   if (c.includes('__dirname')) { c = c.replace(/__dirname/g, '"/app"'); changed = true; }
   if (c.includes('__filename')) { c = c.replace(/__filename/g, JSON.stringify('/app/' + path.relative(process.cwd(), filePath))); changed = true; }
-
-  // Replace require('http') and require('https') with relative path to http-shim.js
+  
   var relDir = path.relative(path.dirname(filePath), process.cwd()).replace(/\\/g, '/');
   if (relDir === '') relDir = '.';
   var shimPath = relDir + '/http-shim';
@@ -259,37 +248,29 @@ function patchFile(filePath, isServerJs) {
   if (c.includes("require('https')")) { c = c.replace(/require\('https'\)/g, "require('" + shimPath + "')"); changed = true; }
   if (c.includes('require("https")')) { c = c.replace(/require\("https"\)/g, "require('" + shimPath + "')"); changed = true; }
 
-  // Stub compression
   if (c.includes("require('compression')")) { c = c.replace(/require\('compression'\)/g, "(function(){return function(req,res,next){next();};})"); changed = true; }
   if (c.includes('require("compression")')) { c = c.replace(/require\("compression"\)/g, "(function(){return function(req,res,next){next();};})"); changed = true; }
-
-  // Remove express.static
+  
   if (c.match(/express\.static\s*\(/)) {
     c = c.replace(/app\.use\(\s*express\.static\([^)]*\)\s*\)/g, function(m) { return '// REMOVED: ' + m; });
     c = c.replace(/express\.static\([^)]*\)/g, function(m) { return '(function(){return function(req,res,next){next();};})() /* was: ' + m + ' */'; });
     changed = true;
   }
 
-  // Remove app.listen
   if (c.match(/app\.listen\s*\(/)) { c = c.replace(/app\.listen\([^;]*;/g, function(m) { return '// REMOVED: ' + m; }); changed = true; }
-
-  // Remove http.createServer
+  
   if (c.match(/http\.createServer\s*\(/)) { c = c.replace(/http\.createServer\([^;]*;/g, function(m) { return '// REMOVED: ' + m; }); changed = true; }
 
-  // Remove fs.createReadStream
   if (c.includes('fs.createReadStream')) { c = c.replace(/fs\.createReadStream/g, '// REMOVED: fs.createReadStream'); changed = true; }
 
-  // Remove fs write operations
   if (c.match(/fs\.(writeFile|writeFileSync|mkdir|mkdirSync|appendFile|appendFileSync|unlink|unlinkSync|rmdir|rmdirSync|rename|renameSync|copyFile|copyFileSync)/)) {
     c = c.replace(/fs\.(writeFile|writeFileSync|mkdir|mkdirSync|appendFile|appendFileSync|unlink|unlinkSync|rmdir|rmdirSync|rename|renameSync|copyFile|copyFileSync)/g, function(m) { return '// REMOVED: ' + m; });
     changed = true;
   }
 
-  // Stub child_process
   if (c.includes("require('child_process')")) { c = c.replace(/require\('child_process'\)/g, '{} /* child_process not available */'); changed = true; }
   if (c.includes('require("child_process")')) { c = c.replace(/require\("child_process"\)/g, '{} /* child_process not available */'); changed = true; }
-
-  // Server.js specific patches
+  
   if (isServerJs) {
     var idx = c.indexOf('process.on');
     if (idx !== -1) { c = c.substring(0, idx); changed = true; }
