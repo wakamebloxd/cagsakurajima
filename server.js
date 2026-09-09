@@ -6,7 +6,7 @@ const bodyParser = require("body-parser");
 const serverYt = require("./server/youtube.js");
 const cors = require("cors");
 const cookieParser = require("cookie-parser");
-//test
+
 const app = express();
 let client;
 let YouTubeJS;
@@ -89,7 +89,7 @@ async function initInnerTube() {
     serverYt.setClient(client);
     console.log("YouTube client initialized successfully");
   } catch (e) {
-    // ★変更: causeも出力して原因を特定しやすくする
+    
     console.error("YouTube client initialization failed:", e.message, "cause:", e.cause);
     console.log("Server running without YouTube features. Retrying in 30s...");
     setTimeout(initInnerTube, 30000);
